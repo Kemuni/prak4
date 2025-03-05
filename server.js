@@ -1,5 +1,7 @@
 const express = require('express');
-const bodyParser = require('body-parser');
+const { graphqlHTTP } = require('express-graphql');
+const { buildSchema } = require('graphql');
+const fs = require('fs')
 
 const app = express();
 app.use(express.static('public'))
@@ -10,63 +12,113 @@ app.get('/', (req, res) => {
 
 const PORT = 8080;
 
-const swaggerJsDoc = require('swagger-jsdoc');
-const swaggerUi = require('swagger-ui-express');
-const fs = require('fs')
+const schema = buildSchema(`
+    type Product {
+        id: ID!
+        name: String!
+        price: Int!
+        description: String!
+        categoryIds: [Int]
+    }
+    type Category {
+        id: ID!
+        name: String!
+        products: [Product]
+    }
+    
+    type Query {
+        categories: [Category]
+    }
+`);
 
-// Swagger документация
-const swaggerOptions = {
-    swaggerDefinition: {
-        openapi: '3.0.0',
-        info: {
-            title: 'Task Management API',
-            version: '1.0.0',
-            description: 'API для управления задачами',
-        },
-        servers: [
-            {
-                url: `http://localhost:${PORT}`,
-            },
-        ],
-    },
-    apis: ['user_openapi.yaml'], // укажите путь к файлам с аннотациями
-};
+class Product {
+    constructor({ id, name, price, description }) {
+        this.id = id;
+        this.name = name;
+        this.price = price;
+        this.description = description;
+    }
+}
 
-const swaggerDocs = swaggerJsDoc(swaggerOptions);
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
+class Category {
+    constructor({ id, name, products }) {
+        this.id = id;
+        this.name = name;
+        this.products = products;
+    }
+}
 
-
-// Middleware для парсинга JSON
-app.use(bodyParser.json());
-
-
-// Получить список данных
-app.get('/products', (req, res) => {
-    fs.readFile('./data.json', 'utf-8', function(err, data) {
-        if (err) throw err
+let root = {
+    categories: () => {
+        let data;
+        try {
+            data = fs.readFileSync('./data.json', 'utf-8');
+        } catch (err) {
+            console.error(err);
+        }
 
         let jsonData = JSON.parse(data);
-        let categoryIdToName = {}
+        let result = [];
         for (const category of jsonData.categories) {
-            categoryIdToName[category.id] = category.name;
-        }
-
-        let result = {};
-        for (const product of jsonData.products) {
-            for (const categoryId of product.categoryIds) {
-                let categoryName = categoryIdToName[categoryId];
-                if (result.hasOwnProperty(categoryName)) {
-                    result[categoryName].push(product);
-                } else {
-                    result[categoryName] = [product];
+            let categoryJson = new Category(category);
+            categoryJson.products = [];
+            for (const product of jsonData.products) {
+                for (const categoryId of product.categoryIds) {
+                    if (categoryId === category.id) {
+                        categoryJson.products.push(new Product(product));
+                        break;
+                    }
                 }
             }
+            result.push(categoryJson);
         }
-        res.json(result);
-    });
-});
+        return result;
+    },
+}
+
+app.use(
+    '/graphql',
+    graphqlHTTP({
+        schema: schema,
+        rootValue: root,
+        graphiql: true,
+    }),
+);
+
 
 // Запуск сервера
 app.listen(PORT, () => {
     console.log("Server is running on http://localhost:", PORT);
 });
+
+
+const WebSocket = require("ws");
+const ws_server = new WebSocket.Server({port: 9000});
+
+const clients = [];
+
+ws_server.on("connection", onConnect);
+function onConnect(client) {
+    console.log("Connection opened");
+
+    clients.push(client);
+
+    // обрабатываем входящие сообщения от клиента
+    client.on("message", function(data) {
+        const clientData = JSON.parse(data);
+        clients.forEach(client => {
+            if (client.readyState === WebSocket.OPEN) {
+                client.send(JSON.stringify(clientData));
+            }
+        });
+    });
+    // закрытие подключения
+    client.on("close", function() {
+        const index = clients.indexOf(client);
+        if (index !== -1) {
+            clients.splice(index, 1);
+        }
+    });
+}
+
+console.log("WebSocket Сервер запущен на 9000 порту");
